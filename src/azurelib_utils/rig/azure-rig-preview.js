@@ -501,6 +501,11 @@ function solveCcd(bones, effector, target, constraints, iterations, tolerance) {
 
 /** Where a chain's preview target is this frame, in world space, or null to skip. */
 function previewTarget(entry, effectorWorld) {
+  if (entry.target?.type === 'bone') {
+    const mesh = entry.target.bone ? boneMesh(entry.target.bone) : null;
+    return mesh ? pointOnBone(mesh, entry.target.point || [0, 0, 0]) : null;
+  }
+
   const p = entry.preview || {};
   if (p.enabled === false || p.mode === 'off') return null;
 

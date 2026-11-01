@@ -164,6 +164,9 @@ function targetForm(t, kinds) {
     stepUp: { label: 'Max step up (blocks)', type: 'number', value: t.stepUp ?? 0.5, step: 0.05, condition: f => f.targetType === 'ground' },
     stepDown: { label: 'Max step down (blocks)', type: 'number', value: t.stepDown ?? 0.75, step: 0.05, condition: f => f.targetType === 'ground' },
     targetPoint: { label: 'Model point (pixels)', type: 'vector', dimensions: 3, value: t.point, condition: f => f.targetType === 'model' },
+    targetBone: { label: 'Bone to follow', type: 'select', options: boneOptions(), value: t.bone || '', condition: f => f.targetType === 'bone' },
+    boneOffset: { label: 'Offset from its pivot (pixels)', type: 'vector', dimensions: 3, value: t.type === 'bone' ? t.point : [0, 0, 0], condition: f => f.targetType === 'bone' },
+    _boneHint: { type: 'info', text: 'Use an empty bone outside this chain and animate its position; the limb reaches for it.', condition: f => f.targetType === 'bone' },
   };
 }
 
@@ -172,10 +175,11 @@ function previewForm(p, allowGround) {
   if (allowGround) modes.ground = 'Ground (raised by offset)';
   return {
     _preview: { type: 'info', text: '<b>Viewport preview</b> (Animate mode)' },
-    previewMode: { label: 'Preview target', type: 'select', options: modes, value: p.enabled === false ? 'off' : p.mode },
-    groundHeight: { label: 'Ground offset (pixels)', type: 'number', value: p.groundHeight ?? 0, condition: f => f.previewMode === 'ground' },
-    previewPoint: { label: 'Point (pixels)', type: 'vector', dimensions: 3, value: p.point, condition: f => f.previewMode === 'point' },
-    previewLocator: { label: 'Locator', type: 'select', options: locatorOptions(), value: p.locator || '', condition: f => f.previewMode === 'locator' },
+    _previewBone: { type: 'info', text: 'The preview follows the bone itself.', condition: f => f.targetType === 'bone' },
+    previewMode: { label: 'Preview target', type: 'select', options: modes, value: p.enabled === false ? 'off' : p.mode, condition: f => f.targetType !== 'bone' },
+    groundHeight: { label: 'Ground offset (pixels)', type: 'number', value: p.groundHeight ?? 0, condition: f => f.targetType !== 'bone' && f.previewMode === 'ground' },
+    previewPoint: { label: 'Point (pixels)', type: 'vector', dimensions: 3, value: p.point, condition: f => f.targetType !== 'bone' && f.previewMode === 'point' },
+    previewLocator: { label: 'Locator', type: 'select', options: locatorOptions(), value: p.locator || '', condition: f => f.targetType !== 'bone' && f.previewMode === 'locator' },
   };
 }
 
@@ -190,7 +194,14 @@ function readPreview(r) {
 }
 
 function readTarget(r) {
-  return { type: r.targetType, stepUp: toNumber(r.stepUp, 0.5), stepDown: toNumber(r.stepDown, 0.75), point: vec(r.targetPoint) };
+  const bone = r.targetType === 'bone';
+  return {
+    type: r.targetType,
+    stepUp: toNumber(r.stepUp, 0.5),
+    stepDown: toNumber(r.stepDown, 0.75),
+    point: vec(bone ? r.boneOffset : r.targetPoint),
+    bone: bone ? (r.targetBone || '') : '',
+  };
 }
 
 function editIkChain(index) {
@@ -204,7 +215,7 @@ function editIkChain(index) {
     pole: { label: 'Pole (model pixels)', type: 'vector', dimensions: 3, value: c.pole || [0, 8, -20], condition: f => f.usePole && f.solver !== 'ccd' },
     iterations: { label: 'Iterations', type: 'number', value: c.iterations, min: 1, max: 64, condition: f => f.solver !== 'two_bone' },
     tolerance: { label: 'Tolerance (pixels)', type: 'number', value: c.tolerance, step: 0.05, condition: f => f.solver !== 'two_bone' },
-    ...targetForm(c.target, ['ground', 'entity_eyes', 'world', 'model']),
+    ...targetForm(c.target, ['ground', 'bone', 'entity_eyes', 'world', 'model']),
     priority: { label: 'Priority', type: 'number', value: c.priority },
     weight: { label: 'Default weight', type: 'number', value: c.weight, min: 0, max: 1, step: 0.05 },
     ...previewForm(c.preview, true),
@@ -231,7 +242,7 @@ function editLookAt(index) {
     id: { label: 'Modifier id', type: 'text', value: l.id },
     bones: { label: 'Bones (root first, last one faces the target)', type: 'text', value: l.bones.join(', ') },
     forward: { label: 'Forward (last bone axes)', type: 'vector', dimensions: 3, value: l.forward },
-    ...targetForm(l.target, ['entity_eyes', 'world', 'model']),
+    ...targetForm(l.target, ['entity_eyes', 'bone', 'world', 'model']),
     priority: { label: 'Priority', type: 'number', value: l.priority },
     weight: { label: 'Default weight', type: 'number', value: l.weight, min: 0, max: 1, step: 0.05 },
     ...previewForm(l.preview, false),
@@ -780,7 +791,7 @@ function registerPanel() {
               return parts.join(' · ');
             }
             case 'sockets': return [item.locator ? 'locator' : item.bone, item.serverHitbox ? 'server' : ''].filter(Boolean).join(' · ');
-            case 'ikChains': return `${item.bones.length} bones · ${item.target.type.replace('_', ' ')}`;
+            case 'ikChains': return `${item.bones.length} bones · ${item.target.type === 'bone' ? `follows ${item.target.bone || '?'}` : item.target.type.replace('_', ' ')}`;
             case 'lookAts': return item.bones.join(' › ');
             case 'constraints': return `${item.type.replace('_', ' ')}${item.standalone ? ' · clamps pose' : ''}`;
             case 'springBones': {
