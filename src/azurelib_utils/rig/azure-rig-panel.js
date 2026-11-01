@@ -134,6 +134,55 @@ function editHitbox(index) {
   }), ['<p>Hitboxes follow their bone. Without a size, AzureLib fits the box to the bone\'s own cubes.</p>']);
 }
 
+function editHitboxes(indices) {
+  const list = indices.map(i => RigStore.rig.hitboxes[i]).filter(Boolean);
+  if (!list.length) return;
+  const names = list.map(h => h.name);
+  const keep = { '': '(unchanged)' };
+  const roles = { ...keep, ...Object.fromEntries(HITBOX_ROLES.map(r => [r, r.charAt(0) + r.slice(1).toLowerCase()])) };
+  const allTags = [...new Set(list.flatMap(h => h.tags || []))];
+
+  openForm(`Edit ${list.length} hitboxes`, {
+    role: { label: 'Role', type: 'select', options: roles, value: '' },
+    damageMultiplier: { label: 'Damage multiplier', type: 'text', value: '', placeholder: '(unchanged)' },
+    inflate: { label: 'Inflate (pixels)', type: 'text', value: '', placeholder: '(unchanged)' },
+    sizing: { label: 'Size', type: 'select', options: { '': '(unchanged)', fit: 'Fit to bone cubes', size: 'Set a size' }, value: '' },
+    size: { label: 'Size (pixels)', type: 'vector', dimensions: 3, value: [4, 4, 4], condition: f => f.sizing === 'size' },
+    anchorAtPivot: { label: 'Center on pivot', type: 'select', options: { '': '(unchanged)', on: 'On', off: 'Off' }, value: '' },
+    clearTags: { label: 'Remove all existing tags first', type: 'checkbox', value: false },
+    addTags: { label: 'Add tags (comma separated)', type: 'text', value: '' },
+    removeTags: { label: 'Remove tags (comma separated)', type: 'text', value: '', placeholder: allTags.join(', ') },
+  }, r => {
+    const number = text => {
+      const t = String(text ?? '').trim();
+      if (!t) return undefined;
+      const n = Number(t);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    const tagList = text => String(text || '').split(',').map(t => t.trim()).filter(Boolean);
+    const damage = number(r.damageMultiplier);
+    const inflate = number(r.inflate);
+    const add = tagList(r.addTags);
+    const remove = new Set(tagList(r.removeTags));
+
+    RigStore.edit(`Edit ${list.length} hitboxes`, rig => {
+      for (const i of indices) {
+        const h = rig.hitboxes[i];
+        if (!h) continue;
+        if (r.role) h.role = r.role;
+        if (damage !== undefined) h.damageMultiplier = Math.max(0, damage);
+        if (inflate !== undefined) h.inflate = inflate;
+        if (r.sizing === 'fit') h.fit = true;
+        if (r.sizing === 'size') { h.fit = false; h.size = vec(r.size); }
+        if (r.anchorAtPivot) h.anchorAtPivot = r.anchorAtPivot === 'on';
+        let tags = r.clearTags ? [] : (h.tags || []).filter(t => !remove.has(t));
+        for (const t of add) if (!tags.includes(t)) tags.push(t);
+        h.tags = tags;
+      }
+    });
+  }, [`<p>Editing ${names.length > 8 ? `${names.slice(0, 8).join(', ')} and ${names.length - 8} more` : names.join(', ')}. Fields left as they are keep each hitbox\'s own value.</p>`]);
+}
+
 function editSocket(index) {
   const s = RigStore.rig.sockets[index];
   openForm(`Socket: ${s.locator || s.name}`, {
@@ -593,8 +642,19 @@ let onModeChange = null;
 let onModelChange = null;
 
 const PANEL_CSS = `
-.azl-rig { padding: 4px 6px 8px; font-size: 12px; line-height: 1.35; }
-.azl-rig .azl-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; flex-wrap: wrap; }
+.azl-rig {
+  padding: 4px 6px 0; font-size: 12px; line-height: 1.35;
+  display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; box-sizing: border-box;
+}
+.azl-rig .azl-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.azl-rig .azl-row.selected { background: var(--color-selected, rgba(70, 130, 255, .25)); }
+.azl-rig .azl-row.selected:hover { background: var(--color-selected, rgba(70, 130, 255, .32)); }
+.azl-rig .azl-selbar {
+  display: flex; align-items: center; gap: 4px; margin: 2px 0 2px 18px; padding: 2px 6px; border-radius: 4px;
+  background: var(--color-button); font-size: 11px;
+}
+.azl-rig .azl-selbar .azl-btn { height: 18px; line-height: 18px; padding: 0 6px; font-size: 11px; }
+.azl-rig .azl-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; flex-wrap: wrap; flex: none; }
 .azl-rig .azl-spacer { flex: 1; }
 .azl-rig .azl-btn {
   height: 22px; min-width: 0; padding: 0 8px; font-size: 12px; line-height: 22px;
@@ -713,6 +773,7 @@ function registerPanel() {
           sections: SECTIONS,
           open: sectionOpen,
           blend: { index: -1, x: 0, y: 0 },
+          sel: { key: null, items: [], anchor: null, count: 0 },
           version: 0,
           mode: typeof Modes !== 'undefined' && Modes.selected ? Modes.selected.id : '',
         };
@@ -721,6 +782,8 @@ function registerPanel() {
         this._off = RigStore.onChange(rig => {
           this.rig = rig;
           if (this.blend.index >= rig.blendSpaces.length) this.stopBlend();
+          // Entries added or removed: the selected indices would point at the wrong rows.
+          if (this.sel.key && rig[this.sel.key].length !== this.sel.count) this.clearSelection();
           this.version++;
         });
       },
@@ -750,6 +813,65 @@ function registerPanel() {
         add(kind, key) {
           Add[kind]();
           if (key) this.open[key] = true;
+        },
+        rowClick(key, index, event) {
+          const toggle = event.ctrlKey || event.metaKey;
+          const range = event.shiftKey;
+          if (!toggle && !range) {
+            this.clearSelection();
+            this.edit(key, index);
+            return;
+          }
+          if (this.sel.key !== key) {
+            this.sel.key = key;
+            this.sel.items = [];
+            this.sel.anchor = null;
+          }
+          this.sel.count = this.rig[key].length;
+          if (range && this.sel.anchor !== null) {
+            const from = Math.min(this.sel.anchor, index);
+            const to = Math.max(this.sel.anchor, index);
+            for (let i = from; i <= to; i++) if (!this.sel.items.includes(i)) this.sel.items.push(i);
+          } else {
+            const at = this.sel.items.indexOf(index);
+            if (at >= 0) this.sel.items.splice(at, 1);
+            else this.sel.items.push(index);
+            this.sel.anchor = index;
+          }
+          if (!this.sel.items.length) this.clearSelection();
+        },
+        isSelected(key, index) {
+          return this.sel.key === key && this.sel.items.includes(index);
+        },
+        clearSelection() {
+          this.sel.key = null;
+          this.sel.items = [];
+          this.sel.anchor = null;
+          this.sel.count = 0;
+        },
+        selectAll(key) {
+          this.sel.key = key;
+          this.sel.items = this.rig[key].map((_, i) => i);
+          this.sel.count = this.rig[key].length;
+        },
+        bulkEdit() {
+          if (this.sel.key === 'hitboxes') editHitboxes(this.sel.items.slice().sort((a, b) => a - b));
+        },
+        bulkDelete() {
+          const key = this.sel.key;
+          const indices = this.sel.items.slice().sort((a, b) => b - a);
+          if (!key || !indices.length) return;
+          if (key === 'blendSpaces' && indices.includes(this.blend.index)) this.stopBlend();
+          this.clearSelection();
+          RigStore.edit(`Remove ${indices.length} entries`, rig => {
+            for (const i of indices) {
+              const [removed] = rig[key].splice(i, 1);
+              // Spring chains stop using a removed collider.
+              if (key === 'colliders' && removed) {
+                for (const sb of rig.springBones) sb.colliders = (sb.colliders || []).filter(id => id !== removed.id);
+              }
+            }
+          });
         },
         remove(key, index) {
           if (key === 'blendSpaces' && this.blend.index === index) this.stopBlend();
@@ -876,6 +998,7 @@ function registerPanel() {
     <span class="azl-chip" :class="{on: preview.colliders}" @click="togglePreview('colliders')" title="Show spring colliders in the viewport">Colliders</span>
     <span class="azl-chip" :class="{on: preview.modifiers}" @click="togglePreview('modifiers')" title="Run IK, look-at, spring bones and constraints while animating">Pose</span>
   </div>
+  <div class="azl-scroll">
   <div v-if="isEmpty" class="azl-hint">Select bones or locators, then press + on a section.</div>
 
   <div v-for="sec in sections" :key="sec.key">
@@ -889,8 +1012,16 @@ function registerPanel() {
     </div>
 
     <template v-if="isOpen(sec.key)">
+      <div v-if="sel.key === sec.key" class="azl-selbar">
+        <span>{{ sel.items.length }} selected</span>
+        <span class="azl-spacer"></span>
+        <span v-if="sec.key === 'hitboxes'" class="azl-btn" @click="bulkEdit()" title="Edit the selected hitboxes together">Edit</span>
+        <span class="azl-btn" @click="selectAll(sec.key)" title="Select every entry in this section">All</span>
+        <span class="azl-btn" @click="bulkDelete()" title="Remove the selected entries">Delete</span>
+        <span class="azl-btn" @click="clearSelection()" title="Clear the selection">×</span>
+      </div>
       <div v-for="(item, i) in rig[sec.key]" :key="sec.key + i">
-        <div class="azl-row" @click="edit(sec.key, i)" title="Click to edit">
+        <div class="azl-row" :class="{selected: isSelected(sec.key, i)}" @click="rowClick(sec.key, i, $event)" title="Click to edit · Ctrl/⌘-click or Shift-click to select several">
           <span class="azl-dot" :style="{background: color(sec.key, item)}"></span>
           <span class="azl-name">{{ label(sec.key, item) }}</span>
           <span class="azl-detail" :class="{warn: !!warning(sec.key, item)}">{{ warning(sec.key, item) || detail(sec.key, item) }}</span>
@@ -915,6 +1046,7 @@ function registerPanel() {
         <label><input type="checkbox" :checked="rig.hitboxOptions.clientOnly" @change="toggleOption('clientOnly')"> client only</label>
       </div>
     </template>
+  </div>
   </div>
 </div>`,
     },
